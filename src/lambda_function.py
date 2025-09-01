@@ -32,7 +32,7 @@ class ListRequest(BaseModel):
 
 app = FastAPI()
 
-@app.post("/request")
+@app.post("/api/request")
 def create_request(request: Request):
     item = {
         'userId': request.userId,
@@ -57,7 +57,7 @@ def create_request(request: Request):
         "body": "Success! " + response.get('MessageId')
     }
 
-@app.get("/request")
+@app.get("/api/request")
 def get_request(userId: str):
     response = table.query(
         IndexName='UserIdIndex',
