@@ -33,9 +33,7 @@ class ListRequest(BaseModel):
     status: str
     requestDate: str
     requirements: Requirements
-
-class Artwork(BaseModel):
-    url: str
+    artworkUrl: str
 
 app = FastAPI()
 
@@ -65,7 +63,7 @@ def create_request(request: Request):
     }
 
 @app.get("/api/request/{userId}")
-def get_request(userId: str):
+def get_requests(userId: str):
     response = table.query(
         IndexName='UserIdIndex',
         KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(userId)
@@ -88,18 +86,43 @@ def get_request(userId: str):
     return result
 
 @app.get("/api/request/{userId}/{requestId}")
-def get_presigned_url(userId: str, requestId: str):
+def get_request_details(userId: str, requestId: str):
     """
-    Retrieve a presigned URL for a specific artwork based on userId and requestId.
+    Retrieve the details of a specific request including artwork URL based on userId and requestId.
     """
+    response = table.get_item(
+        Key={
+            'userId': userId,
+            'requestId': requestId
+        }
+    )
+
+    if 'Item' not in response:
+        return {
+            "statusCode": 400,
+            "body": "Request not found"
+        }
+
+    item = response['Item']
+    requirements = item.get('requirements', {})
+
     object_key = f'artwork/{userId}/{requestId}.png'
     presigned_url = s3.meta.client.generate_presigned_url(
         'get_object',
         Params={'Bucket': BUCKET_NAME, 'Key': object_key},
         ExpiresIn=PRE_SIGNED_URL_EXPIRATION
     )
-    return Artwork(
-        url=presigned_url
+
+    return ListRequest(
+        userId=item.get('userId', ''),
+        requestId=item.get('requestId', ''),
+        status=item.get('status', ''),
+        requestDate=item.get('requestDate', ''),
+        requirements=Requirements(
+            shape=requirements.get('shape', ''),
+            color=requirements.get('color', '')
+        ),
+        artworkUrl=presigned_url
     )
 
 lambda_handler = Mangum(app, lifespan="off")
