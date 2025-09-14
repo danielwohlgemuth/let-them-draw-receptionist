@@ -8,11 +8,15 @@ from pydantic import BaseModel
 
 TABLE_NAME = os.environ['TABLE_NAME']
 QUEUE_NAME = os.environ['QUEUE_NAME']
+BUCKET_NAME = os.environ['BUCKET_NAME']
+PRE_SIGNED_URL_EXPIRATION = 3600 # 60 seconds * 60 minutes = 1 hour
 
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(TABLE_NAME)
 sqs = boto3.resource('sqs')
 queue = sqs.get_queue_by_name(QueueName=QUEUE_NAME)
+s3 = boto3.resource('s3')
+bucket = s3.Bucket(BUCKET_NAME)
 
 class Requirements(BaseModel):
     shape: str
@@ -29,6 +33,9 @@ class ListRequest(BaseModel):
     status: str
     requestDate: str
     requirements: Requirements
+
+class Artwork(BaseModel):
+    url: str
 
 app = FastAPI()
 
@@ -57,7 +64,7 @@ def create_request(request: Request):
         "body": "Success! " + response.get('MessageId')
     }
 
-@app.get("/api/request")
+@app.get("/api/request/{userId}")
 def get_request(userId: str):
     response = table.query(
         IndexName='UserIdIndex',
@@ -79,5 +86,20 @@ def get_request(userId: str):
         )
         result.append(list_request)
     return result
+
+@app.get("/api/request/{userId}/{requestId}")
+def get_presigned_url(userId: str, requestId: str):
+    """
+    Retrieve a presigned URL for a specific artwork based on userId and requestId.
+    """
+    object_key = f'artwork/{userId}/{requestId}.png'
+    presigned_url = s3.meta.client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': BUCKET_NAME, 'Key': object_key},
+        ExpiresIn=PRE_SIGNED_URL_EXPIRATION
+    )
+    return Artwork(
+        url=presigned_url
+    )
 
 lambda_handler = Mangum(app, lifespan="off")
