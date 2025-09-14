@@ -33,7 +33,7 @@ class ListRequest(BaseModel):
     status: str
     requestDate: str
     requirements: Requirements
-    artworkUrl: str
+    artworkUrl: str = None
 
 app = FastAPI()
 
