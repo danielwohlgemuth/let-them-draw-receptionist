@@ -33,7 +33,7 @@ class ListRequest(BaseModel):
     status: str
     requestDate: str
     requirements: Requirements
-    artworkUrl: str = None
+    artworkUrl: str | None = None
 
 app = FastAPI()
 
@@ -105,24 +105,27 @@ def get_request_details(userId: str, requestId: str):
 
     item = response['Item']
     requirements = item.get('requirements', {})
+    status = item.get('status', '')
 
-    object_key = f'artwork/{userId}/{requestId}.png'
-    presigned_url = s3.meta.client.generate_presigned_url(
-        'get_object',
-        Params={'Bucket': BUCKET_NAME, 'Key': object_key},
-        ExpiresIn=PRE_SIGNED_URL_EXPIRATION
-    )
+    artwork_url = None
+    if status == 'done':
+        object_key = f'artwork/{userId}/{requestId}.png'
+        artwork_url = s3.meta.client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': object_key},
+            ExpiresIn=PRE_SIGNED_URL_EXPIRATION
+        )
 
     return ListRequest(
         userId=item.get('userId', ''),
         requestId=item.get('requestId', ''),
-        status=item.get('status', ''),
+        status=status,
         requestDate=item.get('requestDate', ''),
         requirements=Requirements(
             shape=requirements.get('shape', ''),
             color=requirements.get('color', '')
         ),
-        artworkUrl=presigned_url
+        artworkUrl=artwork_url
     )
 
 lambda_handler = Mangum(app, lifespan="off")
