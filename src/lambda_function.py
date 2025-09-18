@@ -112,7 +112,8 @@ async def create_request(
 async def get_requests(user_id: str = Depends(get_user_id)):
     response = table.query(
         IndexName='UserIdIndex',
-        KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id),
+        ScanIndexForward=False
     )
     items = response.get('Items', [])
     result = []
