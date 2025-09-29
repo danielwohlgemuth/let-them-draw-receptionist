@@ -4,6 +4,7 @@ import datetime
 import json
 import logging
 import os
+import stripe
 from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from mangum import Mangum
@@ -14,16 +15,21 @@ logger.setLevel(logging.INFO)
 
 
 TABLE_NAME = os.environ['TABLE_NAME']
+SHAPES_TABLE_NAME = os.environ['SHAPES_TABLE_NAME']
 QUEUE_NAME = os.environ['QUEUE_NAME']
 BUCKET_NAME = os.environ['BUCKET_NAME']
+STRIPE_API_KEY = os.environ['STRIPE_API_KEY']
+WEBSITE_URL = os.environ['WEBSITE_URL']
 PRE_SIGNED_URL_EXPIRATION = 3600  # 60 seconds * 60 minutes = 1 hour
 
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(TABLE_NAME)
+shapes_table = dynamodb.Table(SHAPES_TABLE_NAME)
 sqs = boto3.resource('sqs')
 queue = sqs.get_queue_by_name(QueueName=QUEUE_NAME)
 s3 = boto3.resource('s3')
 bucket = s3.Bucket(BUCKET_NAME)
+stripe.api_key = STRIPE_API_KEY
 
 class Requirements(BaseModel):
     shape: str
@@ -39,6 +45,14 @@ class ListRequest(BaseModel):
     requestDate: str
     requirements: Requirements
     artworkUrl: str | None = None
+
+class Shape(BaseModel):
+    shape: str
+    priceId: str
+    price: str
+
+class Checkout(BaseModel):
+    url: str
 
 app = FastAPI()
 
@@ -169,5 +183,34 @@ async def get_request_details(
         ),
         artworkUrl=artwork_url
     )
+
+@app.get("/api/shapes")
+async def get_shapes(user_id: str = Depends(get_user_id)):
+    response = shapes_table.scan()
+    items = response.get('Items', [])
+    shapes = [Shape(shape=item.get('shapeName', ''), price=item.get('price', '')) for item in items]
+    return shapes
+
+@app.post("/api/checkout")
+async def checkout(shape: str, user_id: str = Depends(get_user_id)):
+    response = shapes_table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('shapeName').eq(shape)
+    )
+    items = response.get('Items', [])
+    if not items:
+        raise HTTPException(status_code=404, detail="Shape not found")
+    price_id = items[0].get('priceId', '')
+    checkout_session = stripe.checkout.Session.create(
+        line_items=[
+            {
+                'price': price_id,
+                'quantity': 1,
+            },
+        ],
+        mode='payment',
+        success_url=WEBSITE_URL + f'/artwork/{requestId}',
+        cancel_url=WEBSITE_URL + '/request',
+    )
+    return Checkout(url=checkout_session.url)
 
 lambda_handler = Mangum(app, lifespan="off")
