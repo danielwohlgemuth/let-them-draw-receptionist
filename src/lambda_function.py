@@ -19,6 +19,7 @@ SHAPES_TABLE_NAME = os.environ['SHAPES_TABLE_NAME']
 QUEUE_NAME = os.environ['QUEUE_NAME']
 BUCKET_NAME = os.environ['BUCKET_NAME']
 STRIPE_API_KEY = os.environ['STRIPE_API_KEY']
+STRIPE_WEBHOOK_SECRET = os.environ['STRIPE_WEBHOOK_SECRET']
 WEBSITE_URL = os.environ['WEBSITE_URL']
 PRE_SIGNED_URL_EXPIRATION = 3600  # 60 seconds * 60 minutes = 1 hour
 
@@ -51,7 +52,7 @@ class Shape(BaseModel):
     priceId: str
     price: str
 
-class Checkout(BaseModel):
+class RequestResponse(BaseModel):
     url: str
 
 app = FastAPI()
@@ -111,16 +112,42 @@ async def create_request(
     }
     table.put_item(Item=item)
 
-    body = {
-        'userId': user_id,
-        'requestId': request.requestId,
-    }
-    response = queue.send_message(MessageBody=json.dumps(body))
+    response = shapes_table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('shapeName').eq(request.requirements.shape)
+    )
+    items = response.get('Items', [])
+    if not items:
+        raise HTTPException(status_code=404, detail="Shape not found")
 
-    return {
-        "statusCode": 200,
-        "body": "Success! " + response.get('MessageId')
-    }
+    price = items[0].get('price', '')
+
+    if price == '0':
+        body = {
+            'userId': user_id,
+            'requestId': request.requestId,
+        }
+        response = queue.send_message(MessageBody=json.dumps(body))
+        return RequestResponse(url=f"{WEBSITE_URL}/artwork/{request.requestId}")
+
+    price_id = items[0].get('priceId', '')
+    checkout_session = stripe.checkout.Session.create(
+        line_items=[{'price': price_id, 'quantity': 1}],
+        mode='payment',
+        success_url=f"{WEBSITE_URL}/artwork/{request.requestId}",
+        cancel_url=f"{WEBSITE_URL}/request",
+    )
+
+    table.update_item(
+        Key={
+            'userId': user_id,
+            'requestId': request.requestId
+        },
+        UpdateExpression='set checkoutSessionId = :checkoutSessionId',
+        ExpressionAttributeValues={
+            ':checkoutSessionId': checkout_session.id
+        }
+    )
+    return RequestResponse(url=checkout_session.url)
 
 @app.get("/api/request")
 async def get_requests(user_id: str = Depends(get_user_id)):
@@ -191,26 +218,66 @@ async def get_shapes(user_id: str = Depends(get_user_id)):
     shapes = [Shape(shape=item.get('shapeName', ''), price=item.get('price', '')) for item in items]
     return shapes
 
-@app.post("/api/checkout")
-async def checkout(shape: str, user_id: str = Depends(get_user_id)):
-    response = shapes_table.query(
-        KeyConditionExpression=boto3.dynamodb.conditions.Key('shapeName').eq(shape)
+@app.post("/api/stripe-webhook")
+async def stripe_webhook(request: StripeEvent):
+    payload = await request.json()
+    event = stripe.Webhook.construct_event(
+        payload,
+        request.headers.get('Stripe-Signature'),
+        STRIPE_WEBHOOK_SECRET
     )
-    items = response.get('Items', [])
-    if not items:
-        raise HTTPException(status_code=404, detail="Shape not found")
-    price_id = items[0].get('priceId', '')
-    checkout_session = stripe.checkout.Session.create(
-        line_items=[
-            {
-                'price': price_id,
-                'quantity': 1,
+
+    if event['type'] == 'checkout.session.completed' or event['type'] == 'checkout.session.async_payment_succeeded':
+        session = event['data']['object']
+        if session['payment_status'] == 'paid':
+            checkout_session_id = session['id']
+            response = table.query(
+                IndexName='CheckoutSessionIdIndex',
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('checkoutSessionId').eq(checkout_session_id)
+            )
+            items = response.get('Items', [])
+            if not items:
+                raise HTTPException(status_code=404, detail="Checkout session not found")
+            request_id = items[0]['requestId']
+            user_id = items[0]['userId']
+            table.update_item(
+                Key={
+                    'userId': user_id,
+                    'requestId': request_id
+                },
+                UpdateExpression='set status = :status',
+                ExpressionAttributeValues={
+                    ':status': 'paid'
+                }
+            )
+            body = {
+                'userId': user_id,
+                'requestId': request_id,
+            }
+            response = queue.send_message(MessageBody=json.dumps(body))
+
+    elif event['type'] == 'checkout.session.async_payment_failed' or event['type'] == 'checkout.session.expired':
+        session = event['data']['object']
+        checkout_session_id = session['id']
+        response = table.query(
+            IndexName='CheckoutSessionIdIndex',
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('checkoutSessionId').eq(checkout_session_id)
+        )
+        items = response.get('Items', [])
+        if not items:
+            raise HTTPException(status_code=404, detail="Checkout session not found")
+        request_id = items[0]['requestId']
+        user_id = items[0]['userId']
+        table.update_item(
+            Key={
+                'userId': user_id,
+                'requestId': request_id
             },
-        ],
-        mode='payment',
-        success_url=WEBSITE_URL + f'/artwork/{requestId}',
-        cancel_url=WEBSITE_URL + '/request',
-    )
-    return Checkout(url=checkout_session.url)
+            UpdateExpression='set status = :status',
+            ExpressionAttributeValues={
+                ':status': 'failed'
+            }
+        )
+    return {'status': 'success'}
 
 lambda_handler = Mangum(app, lifespan="off")
