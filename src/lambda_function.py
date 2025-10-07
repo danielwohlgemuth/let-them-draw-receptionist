@@ -36,11 +36,11 @@ class Requirements(BaseModel):
     shape: str
     color: str
 
-class Request(BaseModel):
+class Request2(BaseModel):
     requestId: str
     requirements: Requirements
 
-class ListRequest(BaseModel):
+class RequestList(BaseModel):
     requestId: str
     status: str
     requestDate: str
@@ -97,7 +97,7 @@ async def get_user_id(credentials: HTTPAuthorizationCredentials = Depends(securi
 
 @app.post("/api/request")
 async def create_request(
-    request: Request,
+    request: Request2,
     user_id: str = Depends(get_user_id)
 ):
     item = {
@@ -160,7 +160,7 @@ async def get_requests(user_id: str = Depends(get_user_id)):
     result = []
     for item in items:
         requirements = item.get('requirements', {})
-        list_request = ListRequest(
+        list_request = RequestList(
             requestId=item.get('requestId', ''),
             status=item.get('status', ''),
             requestDate=item.get('requestDate', ''),
@@ -200,7 +200,7 @@ async def get_request_details(
             ExpiresIn=PRE_SIGNED_URL_EXPIRATION
         )
 
-    return ListRequest(
+    return RequestList(
         requestId=item.get('requestId', ''),
         status=status,
         requestDate=item.get('requestDate', ''),
@@ -215,12 +215,12 @@ async def get_request_details(
 async def get_shapes(user_id: str = Depends(get_user_id)):
     response = shapes_table.scan()
     items = response.get('Items', [])
-    shapes = [Shape(shape=item.get('shapeName', ''), price=item.get('price', '')) for item in items]
+    shapes = [Shape(shape=item.get('shapeName', ''), price=item.get('price', ''), priceId='') for item in items]
     return shapes
 
 @app.post("/api/stripe-webhook")
-async def stripe_webhook(request: StripeEvent):
-    payload = await request.json()
+async def stripe_webhook(request: Request):
+    payload = await request.body()
     event = stripe.Webhook.construct_event(
         payload,
         request.headers.get('Stripe-Signature'),
@@ -245,7 +245,10 @@ async def stripe_webhook(request: StripeEvent):
                     'userId': user_id,
                     'requestId': request_id
                 },
-                UpdateExpression='set status = :status',
+                UpdateExpression='set #status = :status',
+                ExpressionAttributeNames={
+                    '#status': 'status'
+                },
                 ExpressionAttributeValues={
                     ':status': 'paid'
                 }
@@ -273,7 +276,10 @@ async def stripe_webhook(request: StripeEvent):
                 'userId': user_id,
                 'requestId': request_id
             },
-            UpdateExpression='set status = :status',
+            UpdateExpression='set #status = :status',
+            ExpressionAttributeNames={
+                '#status': 'status'
+            },
             ExpressionAttributeValues={
                 ':status': 'failed'
             }
