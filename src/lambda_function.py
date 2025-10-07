@@ -21,8 +21,10 @@ BUCKET_NAME = os.environ['BUCKET_NAME']
 STRIPE_API_KEY = os.environ['STRIPE_API_KEY']
 STRIPE_WEBHOOK_SECRET = os.environ['STRIPE_WEBHOOK_SECRET']
 WEBSITE_URL = os.environ['WEBSITE_URL']
+USER_POOL_ID = os.environ['USER_POOL_ID']
 PRE_SIGNED_URL_EXPIRATION = 3600  # 60 seconds * 60 minutes = 1 hour
 
+cognito = boto3.client('cognito-idp')
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(TABLE_NAME)
 shapes_table = dynamodb.Table(SHAPES_TABLE_NAME)
@@ -95,6 +97,19 @@ async def get_user_id(credentials: HTTPAuthorizationCredentials = Depends(securi
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+def get_user_email(user_id):
+    """Retrieve user email from Cognito."""
+    user_response = cognito.admin_get_user(
+        UserPoolId=USER_POOL_ID,
+        Username=user_id
+    )
+
+    for attr in user_response['UserAttributes']:
+        if attr['Name'] == 'email':
+            return attr['Value']
+
+    raise ValueError("User email not found")
+
 @app.post("/api/request")
 async def create_request(
     request: Request2,
@@ -133,6 +148,7 @@ async def create_request(
     checkout_session = stripe.checkout.Session.create(
         line_items=[{'price': price_id, 'quantity': 1}],
         mode='payment',
+        customer_email=get_user_email(user_id),
         success_url=f"{WEBSITE_URL}/artwork/{request.requestId}",
         cancel_url=f"{WEBSITE_URL}/request",
     )
