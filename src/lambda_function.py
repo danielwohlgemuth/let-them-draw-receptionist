@@ -57,7 +57,7 @@ class Shape(BaseModel):
 class RequestResponse(BaseModel):
     url: str
 
-app = FastAPI()
+app = FastAPI(openapi_url="/api/openapi.json", docs_url='/api/docs')
 
 security = HTTPBearer()
 
